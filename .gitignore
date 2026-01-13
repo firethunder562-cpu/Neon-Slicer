@@ -70,6 +70,8 @@
             border-radius: 8px;
             border: 1px solid rgba(0, 242, 255, 0.3);
             backdrop-filter: blur(5px);
+            min-width: 120px;
+            text-align: center;
         }
 
         #health-container {
@@ -92,6 +94,21 @@
 
         #score-label { color: var(--neon-blue); text-shadow: 0 0 10px var(--neon-blue); }
         #missed-label { color: var(--neon-pink); text-shadow: 0 0 10px var(--neon-pink); }
+        #high-score-display { font-size: 0.8rem; color: var(--neon-gold); opacity: 0.8; margin-top: 5px; }
+
+        #level-up-toast {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 3rem;
+            color: var(--neon-gold);
+            text-shadow: 0 0 20px var(--neon-gold);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.5s, transform 0.5s;
+            z-index: 20;
+        }
 
         #overlay {
             position: absolute;
@@ -113,6 +130,13 @@
             color: var(--neon-green);
             text-shadow: 0 0 20px var(--neon-green);
             margin-bottom: 10px;
+        }
+
+        #new-best-tag {
+            color: var(--neon-gold);
+            font-size: 1.2rem;
+            margin-bottom: 10px;
+            animation: pulse 1s infinite alternate;
         }
 
         p {
@@ -173,6 +197,11 @@
             0% { opacity: 1; }
             100% { opacity: 0; }
         }
+
+        @keyframes pulse {
+            0% { transform: scale(1); opacity: 0.8; }
+            100% { transform: scale(1.1); opacity: 1; }
+        }
     </style>
 </head>
 <body>
@@ -180,9 +209,14 @@
     <div id="game-container">
         <div id="damage-overlay" class="damage-flash"></div>
         <div id="heal-overlay" class="heal-flash"></div>
+        <div id="level-up-toast">LEVEL UP!</div>
+
         <div id="ui-layer">
             <div class="stats-top">
-                <div class="stat-box" id="score-label">Score: <span id="score-val">0</span></div>
+                <div class="stat-box" id="score-label">
+                    Score: <span id="score-val">0</span>
+                    <div id="high-score-display">Best: <span id="high-score-val">0</span></div>
+                </div>
                 <div class="stat-box" id="missed-label">Missed: <span id="missed-val">0</span>/15</div>
             </div>
             <div id="health-container">
@@ -192,6 +226,7 @@
 
         <div id="overlay">
             <h1 id="overlay-title">NEON SLICER</h1>
+            <div id="new-best-tag" class="hidden">NEW HIGH SCORE!</div>
             <p id="overlay-desc">Catch the slow neon squares! <br>Don't miss more than 15 or let health hit 0!</p>
             <button class="btn" id="start-btn">Begin Session</button>
         </div>
@@ -204,21 +239,31 @@
         const ctx = canvas.getContext('2d');
         const scoreVal = document.getElementById('score-val');
         const missedVal = document.getElementById('missed-val');
+        const highScoreVal = document.getElementById('high-score-val');
         const healthBar = document.getElementById('health-bar');
         const damageOverlay = document.getElementById('damage-overlay');
         const healOverlay = document.getElementById('heal-overlay');
         const overlay = document.getElementById('overlay');
         const overlayTitle = document.getElementById('overlay-title');
         const startBtn = document.getElementById('start-btn');
+        const newBestTag = document.getElementById('new-best-tag');
+        const levelUpToast = document.getElementById('level-up-toast');
 
         let gameActive = false;
         let score = 0;
+        let highScore = 0;
         let missedCount = 0;
         let health = 100;
         let fruits = [];
         let particles = [];
         let sliceTrail = [];
         
+        // Difficulty scaling variables
+        let difficultyLevel = 1;
+        let currentTargetOnScreen = 3;
+        let speedMultiplier = 1.0;
+        let gravityBase = 0.07;
+
         let mouseX = 0;
         let mouseY = 0;
         let smoothedX = 0;
@@ -226,7 +271,6 @@
         const sensitivity = 0.2; 
 
         const MAX_MISSED = 15;
-        const TARGET_ON_SCREEN = 3; 
 
         function resize() {
             canvas.width = window.innerWidth;
@@ -238,6 +282,12 @@
         }
         window.addEventListener('resize', resize);
         resize();
+
+        // Load high score from memory (simulated)
+        if (localStorage.getItem('neonSlicerHighScore')) {
+            highScore = parseInt(localStorage.getItem('neonSlicerHighScore'));
+            highScoreVal.innerText = highScore;
+        }
 
         const updateInput = (e) => {
             const clientX = e.touches ? e.touches[0].clientX : e.clientX;
@@ -268,9 +318,9 @@
             reset() {
                 this.x = Math.random() * (canvas.width - 200) + 100;
                 this.y = canvas.height + 100;
-                this.vx = (Math.random() - 0.5) * 1.5; 
-                this.vy = -(Math.random() * 2 + 6.5); 
-                this.gravity = 0.07; 
+                this.vx = (Math.random() - 0.5) * 2 * speedMultiplier; 
+                this.vy = -(Math.random() * 2 + 6.5) * speedMultiplier; 
+                this.gravity = gravityBase * speedMultiplier; 
                 
                 if (this.type === "hazard") {
                     this.color = '#ff3131'; 
@@ -282,7 +332,7 @@
                 
                 this.isSliced = false;
                 this.rotation = Math.random() * Math.PI * 2;
-                this.rotSpeed = (Math.random() - 0.5) * 0.02;
+                this.rotSpeed = (Math.random() - 0.5) * 0.04 * speedMultiplier;
             }
 
             update() {
@@ -399,6 +449,24 @@
             }
         }
 
+        function checkLevelUp() {
+            // Level up every 1000 points
+            const newLevel = Math.floor(score / 1000) + 1;
+            if (newLevel > difficultyLevel) {
+                difficultyLevel = newLevel;
+                speedMultiplier += 0.15;
+                currentTargetOnScreen = Math.min(3 + Math.floor(difficultyLevel / 2), 7);
+                
+                // Show toast
+                levelUpToast.style.opacity = '1';
+                levelUpToast.style.transform = 'translate(-50%, -80%)';
+                setTimeout(() => {
+                    levelUpToast.style.opacity = '0';
+                    levelUpToast.style.transform = 'translate(-50%, -50%)';
+                }, 1500);
+            }
+        }
+
         function checkSlices(sx, sy) {
             fruits.forEach(fruit => {
                 if (!fruit.isSliced) {
@@ -416,31 +484,31 @@
                         } else if (fruit.type === "mega") {
                             triggerHeal();
                             score += 250;
-                            scoreVal.innerText = score;
                             for(let i=0; i<40; i++) {
                                 particles.push(new Particle(fruit.x, fruit.y, '#ffea00'));
                             }
                         } else {
                             score += 50;
-                            scoreVal.innerText = score;
                             for(let i=0; i<8; i++) {
                                 particles.push(new Particle(fruit.x, fruit.y, fruit.color));
                             }
                         }
+                        scoreVal.innerText = score;
+                        checkLevelUp();
                     }
                 }
             });
         }
 
         function spawnFruit() {
-            if (fruits.length < TARGET_ON_SCREEN) {
-                if (Math.random() < 0.015) {
+            if (fruits.length < currentTargetOnScreen) {
+                if (Math.random() < (0.015 + (difficultyLevel * 0.005))) {
                     const rand = Math.random();
                     let type = "normal";
                     
                     if (rand < 0.05) { 
                         type = "mega";
-                    } else if (rand < 0.15) { 
+                    } else if (rand < 0.12) { 
                         type = "hazard";
                     }
                     
@@ -453,6 +521,9 @@
             score = 0;
             missedCount = 0;
             health = 100;
+            difficultyLevel = 1;
+            speedMultiplier = 1.0;
+            currentTargetOnScreen = 3;
             fruits = [];
             particles = [];
             sliceTrail = [];
@@ -461,6 +532,7 @@
             updateHealthUI();
             gameActive = true;
             overlay.classList.add('hidden');
+            newBestTag.classList.add('hidden');
             requestAnimationFrame(gameLoop);
         }
 
@@ -471,6 +543,13 @@
             overlayTitle.style.color = "var(--neon-pink)";
             overlayTitle.style.textShadow = "0 0 20px var(--neon-pink)";
             startBtn.innerText = "Retry Protocol";
+
+            if (score > highScore) {
+                highScore = score;
+                highScoreVal.innerText = highScore;
+                localStorage.setItem('neonSlicerHighScore', highScore);
+                newBestTag.classList.remove('hidden');
+            }
         }
 
         function gameLoop() {
